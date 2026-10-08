@@ -1,6 +1,10 @@
 # CCF area lookup
 
-Look up the finest available [Unified Mouse Brain Atlas v2](https://figshare.com/articles/dataset/Unified_mouse_brain_atlas_v2/25750983) label at an Allen CCFv3 position. The atlas is from [Chon et al., 2019](https://www.nature.com/articles/s41467-019-13057-w); the 2024 v2 release corrects labels and provides a 20 µm isotropic volume. This tool reads the downloaded volume and ontology directly without loading the 287 MB image into memory.
+Look up the [Unified Mouse Brain Atlas v2](https://figshare.com/articles/dataset/Unified_mouse_brain_atlas_v2/25750983) label at an Allen CCFv3 position. The atlas is from [Chon et al., 2019](https://www.nature.com/articles/s41467-019-13057-w); This tool reads the downloaded volume and ontology directly without loading the 287 MB image into memory.
+
+## Download the atlas data first
+
+Download the Unified Mouse Brain Atlas v2 data from the [Unified Atlas website on Figshare](https://figshare.com/articles/dataset/Unified_mouse_brain_atlas_v2/25750983) and extract it. The lookup expects `UnifiedAtlas_Label_v2_20um-isotropic.nii` and `UnifiedAtlas_Label_ontology_v2.csv` in the extracted directory. By default, it looks in `~/Downloads/25750983`; use `--atlas-dir /path/to/25750983` or set `CCF_ATLAS_DIR` for another location. Keep the large atlas files outside this repository.
 
 ## Run
 
@@ -15,8 +19,6 @@ The three numbers are **AP, DV, ML in micrometers**, measured from the anterior,
 ```json
 {"ccf_um": [5180.0, 3000.0, 7380.0], "atlas_voxel": [200, 150, 400], "region_id": 2380, "name": "Caudoputamen- intermediate, dorsomedial, dorsal tip", "acronym": "CPi, dm, dt", "status": "labeled"}
 ```
-
-The tool uses `~/Downloads/25750983` by default. For another location, pass `--atlas-dir /path/to/25750983` or set `CCF_ATLAS_DIR`. The directory must contain `UnifiedAtlas_Label_v2_20um-isotropic.nii` and `UnifiedAtlas_Label_ontology_v2.csv`. Keep the large atlas files outside this repository.
 
 ## Use from Python
 
