@@ -1,0 +1,18 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Large atlas data belongs outside the repository.
+*.nii
+*.nii.gz
+
+*.png
+*.pdf
+*.json

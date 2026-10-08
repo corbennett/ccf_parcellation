@@ -1,0 +1,14 @@
+[project]
+name = "ccf-parcellation"
+version = "0.1.0"
+description = "Look up Unified Mouse Brain Atlas v2 labels at Allen CCFv3 coordinates"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+viz = [
+    "matplotlib>=3.9.4",
+    "numpy>=2.0.2",
+    "pynrrd>=1.1.3",
+]
