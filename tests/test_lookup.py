@@ -1,11 +1,27 @@
+import io
+import json
 import math
 import struct
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+from urllib.request import Request
 
 from ccf_parcellation import AtlasLookup
-from ccf_parcellation.lookup import ATLAS_FILENAME, ONTOLOGY_FILENAME, SHAPE
+from ccf_parcellation.lookup import (
+    ATLAS_FILENAME,
+    FIGSHARE_FILES_URL,
+    ONTOLOGY_FILENAME,
+    SHAPE,
+)
+
+
+class FakeResponse(io.BytesIO):
+    def __init__(self, data, status=200, headers=None):
+        super().__init__(data)
+        self.status = status
+        self.headers = headers or {}
 
 
 class AtlasLookupTests(unittest.TestCase):
@@ -55,6 +71,79 @@ class AtlasLookupTests(unittest.TestCase):
             for coords in [(-1, 0, 0), (13200, 0, 0), (0, 8000, 0), (0, 0, 11400), (math.nan, 0, 0)]:
                 with self.subTest(coords=coords), self.assertRaises(ValueError):
                     atlas.lookup(*coords)
+
+    def _remote_response(self, request, timeout):
+        atlas_path = self.directory / ATLAS_FILENAME
+        if request == FIGSHARE_FILES_URL:
+            files = [
+                {"name": ATLAS_FILENAME, "size": atlas_path.stat().st_size,
+                 "download_url": "https://example.org/atlas.nii"},
+                {"name": ONTOLOGY_FILENAME, "size": (self.directory / ONTOLOGY_FILENAME).stat().st_size,
+                 "download_url": "https://example.org/ontology.csv"},
+            ]
+            return FakeResponse(json.dumps(files).encode())
+        if request == "https://example.org/ontology.csv":
+            return FakeResponse((self.directory / ONTOLOGY_FILENAME).read_bytes())
+        self.assertIsInstance(request, Request)
+        self.assertEqual(request.full_url, "https://example.org/atlas.nii")
+        byte_range = request.get_header("Range")
+        self.remote_ranges.append(byte_range)
+        start, end = map(int, byte_range.removeprefix("bytes=").split("-"))
+        with atlas_path.open("rb") as handle:
+            handle.seek(start)
+            data = handle.read(end - start + 1)
+        return FakeResponse(
+            data, status=206,
+            headers={"Content-Range": f"bytes {start}-{end}/{atlas_path.stat().st_size}"},
+        )
+
+    def test_remote_fallback_reads_only_requested_ranges(self):
+        self.remote_ranges = []
+        with patch("ccf_parcellation.lookup.urlopen", side_effect=self._remote_response):
+            with AtlasLookup(self.directory / "absent", remote_if_missing=True) as atlas:
+                self.assertEqual(atlas.lookup(0, 0, 0).region_id, 42)
+                self.assertEqual(atlas.lookup(0, 0, 20).region_id, 43)
+                self.assertEqual(atlas.lookup(13199, 7999, 11399).status, "allen_ontology_fallback")
+        self.assertEqual(self.remote_ranges[0], "bytes=0-351")
+        self.assertEqual(len(self.remote_ranges), 4)
+        for byte_range in self.remote_ranges[1:]:
+            start, end = map(int, byte_range.removeprefix("bytes=").split("-"))
+            self.assertEqual(end, start + 1)
+
+    def test_missing_atlas_file_uses_remote_copy(self):
+        partial_dir = self.directory / "partial"
+        partial_dir.mkdir()
+        (partial_dir / ONTOLOGY_FILENAME).write_bytes(
+            (self.directory / ONTOLOGY_FILENAME).read_bytes()
+        )
+        self.remote_ranges = []
+        with patch("ccf_parcellation.lookup.urlopen", side_effect=self._remote_response):
+            with AtlasLookup(partial_dir, remote_if_missing=True) as atlas:
+                self.assertEqual(atlas.lookup(0, 0, 0).region_id, 42)
+        self.assertEqual(len(self.remote_ranges), 2)
+
+    def test_missing_local_copy_requires_opt_in(self):
+        with self.assertRaises(FileNotFoundError):
+            AtlasLookup(self.directory / "absent")
+
+    def test_remote_option_prefers_complete_local_copy(self):
+        with patch("ccf_parcellation.lookup.urlopen") as urlopen:
+            with AtlasLookup(self.directory, remote_if_missing=True) as atlas:
+                self.assertEqual(atlas.lookup(0, 0, 0).region_id, 42)
+            urlopen.assert_not_called()
+
+    def test_remote_fallback_rejects_server_ignoring_range(self):
+        self.remote_ranges = []
+
+        def ignored_range(request, timeout):
+            response = self._remote_response(request, timeout)
+            if isinstance(request, Request):
+                response.status = 200
+            return response
+
+        with patch("ccf_parcellation.lookup.urlopen", side_effect=ignored_range):
+            with self.assertRaisesRegex(ValueError, "did not honor byte range"):
+                AtlasLookup(self.directory / "absent", remote_if_missing=True)
 
 
 if __name__ == "__main__":

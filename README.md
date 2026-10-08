@@ -1,10 +1,12 @@
 # CCF area lookup
 
-Look up the [Unified Mouse Brain Atlas v2](https://figshare.com/articles/dataset/Unified_mouse_brain_atlas_v2/25750983) label at an Allen CCFv3 position. The atlas is from [Chon et al., 2019](https://www.nature.com/articles/s41467-019-13057-w); This tool reads the downloaded volume and ontology directly without loading the 287 MB image into memory.
+Look up the [Unified Mouse Brain Atlas v2](https://figshare.com/articles/dataset/Unified_mouse_brain_atlas_v2/25750983) label at an Allen CCFv3 position. The atlas is from [Chon et al., 2019](https://www.nature.com/articles/s41467-019-13057-w). Point lookups can use a downloaded copy or read directly from Figshare without loading the 287 MB image into memory.
 
-## Download the atlas data first
+## Atlas data
 
-Download the Unified Mouse Brain Atlas v2 data from the [Unified Atlas website on Figshare](https://figshare.com/articles/dataset/Unified_mouse_brain_atlas_v2/25750983) and extract it. The lookup expects `UnifiedAtlas_Label_v2_20um-isotropic.nii` and `UnifiedAtlas_Label_ontology_v2.csv` in the extracted directory. By default, it looks in `~/Downloads/25750983`; use `--atlas-dir /path/to/25750983` or set `CCF_ATLAS_DIR` for another location. Keep the large atlas files outside this repository.
+For local use, download the Unified Mouse Brain Atlas v2 data from the [Unified Atlas website on Figshare](https://figshare.com/articles/dataset/Unified_mouse_brain_atlas_v2/25750983) and extract it. The lookup expects `UnifiedAtlas_Label_v2_20um-isotropic.nii` and `UnifiedAtlas_Label_ontology_v2.csv` in the extracted directory. By default, it looks in `~/Downloads/25750983`; use `--atlas-dir /path/to/25750983` or set `CCF_ATLAS_DIR` for another location. Keep the large atlas files outside this repository.
+
+For point lookups without a local copy, add `--remote-if-missing`. If both files are present locally, the lookup uses them. Otherwise it reads the small ontology CSV from Figshare and requests only the NIfTI header and the two bytes for each queried voxel. Remote lookups require an internet connection and incur one request per point. The figure and alignment scripts still require local atlas files.
 
 ## Run
 
@@ -12,6 +14,12 @@ From this directory, with [uv](https://docs.astral.sh/uv/) installed:
 
 ```sh
 uv run python main.py 5180 3000 7380
+```
+
+To use Figshare when the local files are absent:
+
+```sh
+uv run python main.py 5180 3000 7380 --remote-if-missing
 ```
 
 The three numbers are **AP, DV, ML in micrometers**, measured from the anterior, superior, left corner of Allen CCFv3. AP increases toward the posterior, DV toward the ventral side, and ML toward the right. The example returns:
@@ -29,6 +37,8 @@ with AtlasLookup("~/Downloads/25750983") as atlas:
     result = atlas.lookup(5180, 3000, 7380)
     print(result.name, result.acronym)
 ```
+
+Pass `remote_if_missing=True` to `AtlasLookup` for the same fallback in Python.
 
 Reuse one `AtlasLookup` instance for many points. Each call returns the atlas voxel, raw region ID, label, and status. Coordinates must be within AP `[0, 13200)`, DV `[0, 8000)`, and ML `[0, 11400)` µm. Each point selects the containing 20 µm voxel. `outside_brain` means the volume contains ID 0 at an otherwise valid CCF position.
 

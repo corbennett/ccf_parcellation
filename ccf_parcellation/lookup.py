@@ -1,4 +1,4 @@
-"""Memory-mapped lookup into the Figshare Unified Atlas v2 label NIfTI.
+"""Local or HTTP range lookup into the Figshare Unified Atlas v2 label NIfTI.
 
 The released label NIfTI has no qform/sform and says pixdim=(1, 1, 1), so its
 header alone cannot locate voxels in CCF space. The matching template and
@@ -9,6 +9,7 @@ Allen CCF coordinates use the ASL corner and AP, DV, ML axis order.
 
 import argparse
 import csv
+import io
 import json
 import math
 import mmap
@@ -16,11 +17,14 @@ import os
 import struct
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import BinaryIO, Dict, Optional, Tuple, Union
+from typing import Dict, Optional, TextIO, Tuple, Union
+from urllib.request import Request, urlopen
 
 
 ATLAS_FILENAME = "UnifiedAtlas_Label_v2_20um-isotropic.nii"
 ONTOLOGY_FILENAME = "UnifiedAtlas_Label_ontology_v2.csv"
+FIGSHARE_FILES_URL = "https://api.figshare.com/v2/articles/25750983/files"
+REQUEST_TIMEOUT_SECONDS = 30
 SHAPE = (570, 400, 660)  # R/L, D/V, P/A
 RESOLUTION_UM = 20
 HEADER_BYTES = 352
@@ -42,7 +46,7 @@ class LookupResult:
 
 
 class AtlasLookup:
-    """Open the local atlas once and perform constant-time point lookups.
+    """Look up points in a local atlas, or use Figshare when opted in.
 
     Coordinates are in micrometers from the Allen CCFv3 anterior, superior,
     left corner, ordered (AP, DV, ML). Increasing AP goes posterior, increasing
@@ -50,22 +54,31 @@ class AtlasLookup:
     containing 20 µm voxel; boundaries belong to the next voxel.
     """
 
-    def __init__(self, atlas_dir: Union[str, Path]):
+    def __init__(self, atlas_dir: Union[str, Path], remote_if_missing: bool = False):
         atlas_dir = Path(atlas_dir).expanduser()
         atlas_path = atlas_dir / ATLAS_FILENAME
         ontology_path = atlas_dir / ONTOLOGY_FILENAME
-        self._regions = _read_ontology(ontology_path)
-        self._file = atlas_path.open("rb")
-        try:
-            _validate_nifti(self._file, atlas_path)
-            self._data = mmap.mmap(self._file.fileno(), 0, access=mmap.ACCESS_READ)
-        except Exception:
-            self._file.close()
-            raise
+        self._file = None
+        self._data = None
+        self._remote_url = None
+        self._remote_size = None
+        if remote_if_missing and not (atlas_path.is_file() and ontology_path.is_file()):
+            self._regions, self._remote_url, self._remote_size = _open_remote_atlas()
+        else:
+            self._regions = _read_ontology(ontology_path)
+            self._file = atlas_path.open("rb")
+            try:
+                _validate_nifti(self._file.read(HEADER_BYTES), atlas_path.stat().st_size, str(atlas_path))
+                self._data = mmap.mmap(self._file.fileno(), 0, access=mmap.ACCESS_READ)
+            except Exception:
+                self._file.close()
+                raise
 
     def close(self) -> None:
-        self._data.close()
-        self._file.close()
+        if self._data is not None:
+            self._data.close()
+        if self._file is not None:
+            self._file.close()
 
     def __enter__(self) -> "AtlasLookup":
         return self
@@ -100,7 +113,11 @@ class AtlasLookup:
         offset = HEADER_BYTES + 2 * (
             voxel[0] + SHAPE[0] * (voxel[1] + SHAPE[1] * voxel[2])
         )
-        region_id = struct.unpack_from("<H", self._data, offset)[0]
+        if self._remote_url is None:
+            region_id = struct.unpack_from("<H", self._data, offset)[0]
+        else:
+            voxel_bytes = _fetch_range(self._remote_url, offset, 2, self._remote_size)
+            region_id = struct.unpack("<H", voxel_bytes)[0]
 
         if region_id == 0:
             name = acronym = None
@@ -118,21 +135,62 @@ class AtlasLookup:
 
 
 def _read_ontology(path: Path) -> Dict[int, Tuple[str, str]]:
-    regions: Dict[int, Tuple[str, str]] = {}
     with path.open(newline="", encoding="utf-8-sig") as handle:
-        for row in csv.DictReader(handle):
-            raw_id = row["id"].strip()
-            if not raw_id:  # The released CSV has trailing blank rows.
-                continue
-            region_id = int(raw_id)
-            if region_id in regions:
-                raise ValueError(f"Duplicate ontology ID {region_id} in {path}")
-            regions[region_id] = (row["name"].strip(), row["acronym"].strip())
+        return _parse_ontology(handle, str(path))
+
+
+def _parse_ontology(handle: TextIO, source: str) -> Dict[int, Tuple[str, str]]:
+    regions: Dict[int, Tuple[str, str]] = {}
+    for row in csv.DictReader(handle):
+        raw_id = row["id"].strip()
+        if not raw_id:  # The released CSV has trailing blank rows.
+            continue
+        region_id = int(raw_id)
+        if region_id in regions:
+            raise ValueError(f"Duplicate ontology ID {region_id} in {source}")
+        regions[region_id] = (row["name"].strip(), row["acronym"].strip())
     return regions
 
 
-def _validate_nifti(handle: BinaryIO, path: Path) -> None:
-    header = handle.read(HEADER_BYTES)
+def _open_remote_atlas() -> Tuple[Dict[int, Tuple[str, str]], str, int]:
+    with urlopen(FIGSHARE_FILES_URL, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+        files = {item["name"]: item for item in json.load(response)}
+    try:
+        atlas_file = files[ATLAS_FILENAME]
+        ontology_file = files[ONTOLOGY_FILENAME]
+    except KeyError as exc:
+        raise ValueError(f"Figshare release is missing {exc.args[0]}") from exc
+
+    ontology_size = ontology_file["size"]
+    with urlopen(ontology_file["download_url"], timeout=REQUEST_TIMEOUT_SECONDS) as response:
+        ontology_bytes = response.read(ontology_size + 1)
+    if len(ontology_bytes) != ontology_size:
+        raise ValueError("Unexpected Figshare ontology size")
+    regions = _parse_ontology(
+        io.StringIO(ontology_bytes.decode("utf-8-sig")), ontology_file["download_url"]
+    )
+
+    atlas_url = atlas_file["download_url"]
+    atlas_size = atlas_file["size"]
+    header = _fetch_range(atlas_url, 0, HEADER_BYTES, atlas_size)
+    _validate_nifti(header, atlas_size, atlas_url)
+    return regions, atlas_url, atlas_size
+
+
+def _fetch_range(url: str, start: int, length: int, total_size: int) -> bytes:
+    end = start + length - 1
+    request = Request(url, headers={"Range": f"bytes={start}-{end}"})
+    with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+        expected_range = f"bytes {start}-{end}/{total_size}"
+        if response.status != 206 or response.headers.get("Content-Range") != expected_range:
+            raise ValueError(f"Figshare did not honor byte range {start}-{end}")
+        data = response.read(length + 1)
+    if len(data) != length:
+        raise ValueError(f"Incomplete Figshare byte range {start}-{end}")
+    return data
+
+
+def _validate_nifti(header: bytes, file_size: int, source: str) -> None:
     expected_size = HEADER_BYTES + 2 * math.prod(SHAPE)
     if (
         len(header) != HEADER_BYTES
@@ -141,9 +199,9 @@ def _validate_nifti(handle: BinaryIO, path: Path) -> None:
         or struct.unpack_from("<2h", header, 70) != (512, 16)
         or struct.unpack_from("<f", header, 108)[0] != HEADER_BYTES
         or header[344:348] != b"n+1\x00"
-        or path.stat().st_size != expected_size
+        or file_size != expected_size
     ):
-        raise ValueError(f"Unexpected atlas NIfTI layout: {path}")
+        raise ValueError(f"Unexpected atlas NIfTI layout: {source}")
 
 
 def main(argv: Optional[list] = None) -> int:
@@ -159,9 +217,14 @@ def main(argv: Optional[list] = None) -> int:
         default=Path(os.environ.get("CCF_ATLAS_DIR", "~/Downloads/25750983")),
         help="directory with the downloaded label NIfTI and ontology CSV",
     )
+    parser.add_argument(
+        "--remote-if-missing",
+        action="store_true",
+        help="read the files from Figshare when either local atlas file is missing",
+    )
     args = parser.parse_args(argv)
     try:
-        with AtlasLookup(args.atlas_dir) as atlas:
+        with AtlasLookup(args.atlas_dir, remote_if_missing=args.remote_if_missing) as atlas:
             result = atlas.lookup(args.ap, args.dv, args.ml)
     except (OSError, ValueError) as exc:
         parser.exit(2, f"error: {exc}\n")
