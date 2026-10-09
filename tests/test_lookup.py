@@ -4,11 +4,12 @@ import math
 import struct
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 from urllib.request import Request
 
-from ccf_parcellation import AtlasLookup
+from ccf_parcellation import AtlasLookup, main
 from ccf_parcellation.lookup import (
     ATLAS_FILENAME,
     FIGSHARE_FILES_URL,
@@ -131,6 +132,26 @@ class AtlasLookupTests(unittest.TestCase):
             with AtlasLookup(self.directory, remote_if_missing=True) as atlas:
                 self.assertEqual(atlas.lookup(0, 0, 0).region_id, 42)
             urlopen.assert_not_called()
+
+    def test_cli_uses_remote_copy_by_default_when_local_files_are_missing(self):
+        self.remote_ranges = []
+        output = io.StringIO()
+        with patch("ccf_parcellation.lookup.urlopen", side_effect=self._remote_response):
+            with redirect_stdout(output):
+                exit_code = main([
+                    "0", "0", "0", "--atlas-dir", str(self.directory / "absent")
+                ])
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output.getvalue())["region_id"], 42)
+
+    def test_cli_local_only_fails_when_local_files_are_missing(self):
+        error = io.StringIO()
+        with redirect_stderr(error), self.assertRaisesRegex(SystemExit, "2"):
+            main([
+                "0", "0", "0", "--atlas-dir", str(self.directory / "absent"),
+                "--local-only",
+            ])
+        self.assertIn("No such file or directory", error.getvalue())
 
     def test_remote_fallback_rejects_server_ignoring_range(self):
         self.remote_ranges = []

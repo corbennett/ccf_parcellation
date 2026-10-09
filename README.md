@@ -4,9 +4,17 @@ Look up the [Unified Mouse Brain Atlas v2](https://figshare.com/articles/dataset
 
 ## Atlas data
 
-For local use, download the Unified Mouse Brain Atlas v2 data from the [Unified Atlas website on Figshare](https://figshare.com/articles/dataset/Unified_mouse_brain_atlas_v2/25750983) and extract it. The lookup expects `UnifiedAtlas_Label_v2_20um-isotropic.nii` and `UnifiedAtlas_Label_ontology_v2.csv` in the extracted directory. By default, it looks in `~/Downloads/25750983`; use `--atlas-dir /path/to/25750983` or set `CCF_ATLAS_DIR` for another location. Keep the large atlas files outside this repository.
+For local use, download the two required files directly from Figshare:
 
-For point lookups without a local copy, add `--remote-if-missing`. If both files are present locally, the lookup uses them. Otherwise it reads the small ontology CSV from Figshare and requests only the NIfTI header and the two bytes for each queried voxel. Remote lookups require an internet connection and incur one request per point. The figure and alignment scripts still require local atlas files.
+```python
+from ccf_parcellation import download_atlas
+
+download_atlas("data")
+```
+
+The function downloads and validates `UnifiedAtlas_Label_v2_20um-isotropic.nii` and `UnifiedAtlas_Label_ontology_v2.csv`, reusing valid existing files. The lookup first looks in `~/Downloads/25750983`; use `--atlas-dir /path/to/atlas` or set `CCF_ATLAS_DIR` for another location. Large atlas files should not be committed; this repository ignores `data/`.
+
+If both files are present locally, the lookup uses them. Otherwise it reads the small ontology CSV from Figshare and requests only the NIfTI header and the two bytes for each queried voxel. Add `--local-only` to fail instead when either local file is missing. Remote lookups require an internet connection and incur one request per point. The figure and alignment scripts still require local atlas files.
 
 ## Run
 
@@ -16,10 +24,10 @@ From this directory, with [uv](https://docs.astral.sh/uv/) installed:
 uv run python main.py 5180 3000 7380
 ```
 
-To use Figshare when the local files are absent:
+To require a local copy instead of falling back to Figshare:
 
 ```sh
-uv run python main.py 5180 3000 7380 --remote-if-missing
+uv run python main.py 5180 3000 7380 --local-only
 ```
 
 The three numbers are **AP, DV, ML in micrometers**, measured from the anterior, superior, left corner of Allen CCFv3. AP increases toward the posterior, DV toward the ventral side, and ML toward the right. The example returns:

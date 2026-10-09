@@ -10,6 +10,7 @@ wheels/
 .venv
 
 # Large atlas data belongs outside the repository.
+data/
 *.nii
 *.nii.gz
 
