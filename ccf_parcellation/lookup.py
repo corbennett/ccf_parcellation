@@ -219,9 +219,17 @@ def main(argv: Optional[list] = None) -> int:
     )
     parser.add_argument(
         "--remote-if-missing",
+        dest="remote_if_missing",
         action="store_true",
-        help="read the files from Figshare when either local atlas file is missing",
+        help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--local-only",
+        dest="remote_if_missing",
+        action="store_false",
+        help="fail instead of reading from Figshare when local atlas files are missing",
+    )
+    parser.set_defaults(remote_if_missing=True)
     args = parser.parse_args(argv)
     try:
         with AtlasLookup(args.atlas_dir, remote_if_missing=args.remote_if_missing) as atlas:
